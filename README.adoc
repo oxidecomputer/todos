@@ -1,0 +1,84 @@
+:showtitle:
+:toc: left
+:icons: font
+
+= todos
+
+This tool finds TODO-like comments in Rust code.  It's simplistic and dumb.
+
+Run it as:
+
+```
+cargo run -- path/to/your/rust/source/tree
+```
+
+`todos` will walk the directory tree you give it, read each file whose name ends with ".rs", and look for comments containing "TODO", "FIXME", or "XXX".  It will attempt to group them by "kind" -- like "TODO-security" or "FIXME(so-and-so)".  Then it will print out all of the comments that it found, grouped by kind, followed by a count of all comments found by kind.
+
+Example of running it on this repo (which is particularly misleading because it has comments that look like TODO comments but actually just use these tokens as examples):
+
+```
+$ cargo run -- .
+skipping "./target" (looks like "target" directory)
+reading "./src/main.rs"
+comments with "TODO": 4
+  found "TODO" in file ./src/main.rs line line 239
+    // We've found the start of a line comment.
+    //
+    // TODO This won't handle comments on the same line as
+    // source code.  We don't do this often.
+
+  found "TODO" in file ./src/main.rs line line 246
+    // We've found the start of a block comment.
+    //
+    // TODO This won't handle nested comments.  We don't do
+    // this often.
+
+  found "TODO" in file ./src/main.rs line line 287
+    // TODO include filename
+
+  found "TODO" in file ./src/main.rs line line 293
+    // TODO include filename
+
+comments with "TODO-cleanup": 1
+  found "TODO-cleanup" in file ./src/main.rs line line 26
+    // Skip any "target" directory found at the root.
+    // TODO-cleanup This looks awful.
+
+comments with "TODO-like": 5
+  found "TODO-like" in file ./src/main.rs line line 1
+    //! Simplistic command-line tool to summarize TODO-like comments
+
+  found "TODO-like" in file ./src/main.rs line line 87
+    /// Process one file, finding all TODO-like comments
+
+  found "TODO-like" in file ./src/main.rs line line 124
+    // Pull the TODO-like comments out of the file and track them.
+
+  found "TODO-like" in file ./src/main.rs line line 140
+    /// Tracks all TODO-like comments found in our search, grouped by a "kind"
+    ///
+    /// The kind is basically whatever whitespace-separated word we identified as
+    /// TODO-like.  This might be "TODO" or "XXX" or "TODO-security" or whatever.
+
+  found "TODO-like" in file ./src/main.rs line line 161
+    // Figure out what "kinds" of comment this is.  There may be any number
+    // of these.  A comment might have no TODO-like things in it (in which
+    // case we won't track it) or one of them, or more than one (e.g.,
+    // "TODO-security" and "TODO-coverage").  We will track the entire
+    // comment once for each "kind" that we find in it.
+
+comments with "TODO-like.": 1
+  found "TODO-like." in file ./src/main.rs line line 140
+    /// Tracks all TODO-like comments found in our search, grouped by a "kind"
+    ///
+    /// The kind is basically whatever whitespace-separated word we identified as
+    /// TODO-like.  This might be "TODO" or "XXX" or "TODO-security" or whatever.
+
+SUMMARY:
+
+comments with "TODO": 4
+comments with "TODO-cleanup": 1
+comments with "TODO-like": 5
+comments with "TODO-like.": 1
+total comments found: 11
+```
