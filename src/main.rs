@@ -1,12 +1,8 @@
 use anyhow::ensure;
 use anyhow::Context;
-use proc_macro2::LineColumn;
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::path::Path;
-use syn::__private::ToTokens;
-use syn::spanned::Spanned;
-use syn::visit::Visit;
 
 fn main() -> Result<(), anyhow::Error> {
     let argv = std::env::args_os().collect::<Vec<_>>();
@@ -37,6 +33,7 @@ fn main() -> Result<(), anyhow::Error> {
             }
             !skip
         });
+
     for maybe_entry in walker {
         if let Err(error) = do_file(&mut tracker, maybe_entry) {
             eprintln!("warn: {:#}", error);
@@ -44,9 +41,12 @@ fn main() -> Result<(), anyhow::Error> {
     }
 
     for (label, comments) in &tracker.comments_by_kind {
-        println!("{} (comments: {})", label, comments.len());
+        println!("comments with \"{}\": {}", label, comments.len());
         for c in comments {
-            println!("  file {} line {}", c.file, c.location);
+            println!(
+                "  found {:?} in file {} line {}",
+                label, c.file, c.location
+            );
             println!(
                 "{}",
                 c.contents
@@ -56,7 +56,11 @@ fn main() -> Result<(), anyhow::Error> {
                     .join("")
             );
         }
-        println!("====");
+    }
+
+    println!("SUMMARY:\n");
+    for (label, comments) in &tracker.comments_by_kind {
+        println!("comments with \"{}\": {}", label, comments.len());
     }
 
     Ok(())
@@ -94,13 +98,12 @@ fn do_file(
     }
 
     println!("reading {:?}", path.display());
-    let mut contents = std::io::read_to_string(&file)
+    let contents = std::io::read_to_string(&file)
         .with_context(|| format!("read {:?}", path.display()))?;
-    let parsed = syn::parse_file(&mut contents)
-        .with_context(|| format!("parsing {:?}", path.display()))?;
-    let mut visitor = TodoVisitor::new(path, tracker);
-
-    visitor.visit_file(&parsed);
+    let chunker = FileChunker::new(&contents);
+    for (line, chunk) in chunker {
+        tracker.found_possible_comment(&chunk, path, line);
+    }
 
     Ok(())
 }
@@ -124,7 +127,7 @@ impl CommentTracker {
         &mut self,
         contents: &str,
         path: &Path,
-        wher: LineColumn,
+        line: usize,
     ) {
         let mut found_kinds = BTreeSet::new();
 
@@ -135,7 +138,11 @@ impl CommentTracker {
                     || word.starts_with("FIXME")
                     || word.starts_with("TODO")
                 {
-                    found_kinds.insert(word);
+                    let mut label = word;
+                    if word.ends_with(':') || word.ends_with('-') {
+                        label = &word[0..word.len() - 1];
+                    }
+                    found_kinds.insert(label);
                 }
             }
         }
@@ -148,32 +155,100 @@ impl CommentTracker {
             comments_for_this_kind.push(Comment {
                 contents: contents.to_string(),
                 file: path.display().to_string(),
-                location: format!("line {}", wher.line),
+                location: format!("line {}", line),
             });
         }
     }
 }
 
-struct TodoVisitor<'a> {
-    path: &'a Path,
-    tracker: &'a mut CommentTracker,
+/// "Parses" a file in a very limited sense by dividing it into chunks of
+/// comments
+// It's tempting to use the "syn" crate for this, but it's not that easy to
+// visit all of the non-doc comments in a file.
+struct FileChunker<'a> {
+    lines: std::iter::Enumerate<std::str::Lines<'a>>,
 }
 
-impl<'a> TodoVisitor<'a> {
-    fn new(path: &'a Path, tracker: &'a mut CommentTracker) -> TodoVisitor<'a> {
-        TodoVisitor { path, tracker }
+impl<'a> FileChunker<'a> {
+    fn new(input: &'a str) -> FileChunker {
+        FileChunker { lines: input.lines().enumerate() }
+    }
+
+    fn join(lines: &[&str]) -> String {
+        lines.iter().map(|l| format!("{}\n", l)).collect::<Vec<_>>().join("")
     }
 }
 
-impl<'a, 'ast: 'a> syn::visit::Visit<'ast> for TodoVisitor<'a> {
-    fn visit_attribute(&mut self, i: &'ast syn::Attribute) {
-        syn::visit::visit_attribute(self, i);
+enum FileState {
+    NoComment,
+    InLineComment(usize),
+    InBlockComment(usize),
+}
 
-        let contents = i.tokens.to_token_stream().to_string();
-        self.tracker.found_possible_comment(
-            &contents,
-            self.path,
-            i.span().start(),
-        );
+impl<'a> Iterator for FileChunker<'a> {
+    type Item = (usize, String);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        // precondition: we are not currently in a comment.
+        let mut state = FileState::NoComment;
+        let mut lines = Vec::new();
+        while let Some((line_numz, raw_line)) = self.lines.next() {
+            let line = raw_line.trim_start().trim_end();
+
+            match state {
+                FileState::NoComment => {
+                    if line.starts_with("//") {
+                        // This won't handle comments on the same line as source
+                        // code.  We don't do this often.
+                        lines.push(line);
+                        state = FileState::InLineComment(line_numz + 1);
+                    } else if line.starts_with("/*") && !line.contains("*/") {
+                        // This won't handle nested comments.  We don't do this
+                        // often.
+                        lines.push(line);
+                        state = FileState::InBlockComment(line_numz + 1);
+                    }
+
+                    // Keep reading while we haven't found a comment.
+                }
+
+                FileState::InLineComment(start) => {
+                    if line.starts_with("//") {
+                        // We're still in a line comment.  Keep reading.
+                        lines.push(line);
+                    } else {
+                        // We got to the end of a line comment.  Emit it.
+                        return Some((start, Self::join(&lines)));
+                    }
+                }
+
+                FileState::InBlockComment(start) => {
+                    lines.push(line);
+                    if line == "*/" {
+                        // We got to the end of the block comment.  Emit it.
+                        return Some((start, Self::join(&lines)));
+                    }
+                }
+            }
+        }
+
+        match state {
+            FileState::NoComment => {
+                assert_eq!(lines.len(), 0);
+                None
+            }
+
+            FileState::InLineComment(start) => {
+                // TODO include filename
+                eprintln!("warning: file ended with a line comment");
+                Some((start, Self::join(&lines)))
+            }
+
+            FileState::InBlockComment(start) => {
+                // TODO include filename
+                eprintln!("error: file ended with a line comment");
+                Some((start, Self::join(&lines)))
+            }
+        }
     }
 }

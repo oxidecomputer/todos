@@ -7,6 +7,4 @@ edition = "2021"
 
 [dependencies]
 anyhow = "1.0.68"
-proc-macro2 = { version = "1.0.50", features = [ "span-locations" ] }
-syn = { version = "1.0.107", features = [ "full", "derive", "parsing", "printing", "visit" ] }
 walkdir = "2.3.2"
